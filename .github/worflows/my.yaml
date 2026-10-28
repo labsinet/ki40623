@@ -1,0 +1,165 @@
+name: Network Architecture Assignment Autograder
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  autograde:
+    name: Automatic Check of Student Submission
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Student Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Validate Submission Structure
+        run: |
+          echo "=== 1. Перевірка наявності необхідних файлів ==="
+          MISSING=0
+          
+          if [ ! -f "report.md" ] && [ ! -f "Звіт.md" ]; then
+            echo "❌ Помилка: Файл звіту (report.md або Звіт.md) не знайдено!"
+            MISSING=$((MISSING+1))
+          else
+            echo "✅ Звіт знайдено."
+          fi
+
+          if [ ! -f "calculations.json" ]; then
+            echo "⚠️ Попередження: calculations.json не знайдено (перевірка буде виконуватися по тексту звіту)."
+          else
+            echo "✅ Файл розрахунків calculations.json знайдено."
+          fi
+
+          if [ $MISSING -gt 0 ]; then
+            echo "::error::Не всі обов'язкові файли завантажено у репозиторій!"
+            exit 1
+          fi
+
+      - name: Run Automated Calculation & Content Verifier
+        run: |
+          python - << 'EOF'
+          import sys
+          import os
+          import re
+          import json
+
+          score = 0
+          max_score = 100
+          feedback = []
+
+          report_file = "report.md" if os.path.exists("report.md") else "Звіт.md"
+          
+          with open(report_file, "r", encoding="utf-8") as f:
+              content = f.read()
+
+          # 1. Перевірка розділів (20 балів)
+          sections = [
+              "Крок 1", "Крок 2", "Крок 3", "Крок 4",
+              "DTE", "DCE", "EIA/TIA-569", "СКС"
+          ]
+          found_sections = 0
+          for sec in sections:
+              if re.search(r'\b' + re.escape(sec) + r'\b', content, re.IGNORECASE):
+                  found_sections += 1
+          
+          sec_score = int((found_sections / len(sections)) * 20)
+          score += sec_score
+          feedback.append(f"Структура звіту та ключові терміни: {sec_score}/20 балів")
+
+          # 2. Перевірка формули та розрахунку камери M = B_max / (0.8 * W) (30 балів)
+          if "B_max" in content or "0.8" in content or "0,8" in content:
+              score += 15
+              feedback.append("Формула розрахунку навантаження камери зазначена: 15/15 балів")
+          else:
+              feedback.append("❌ Формула розрахунку M = B_max / (0.8 * W) відсутня: 0/15 балів")
+
+          # Перевірка чисельних параметрів у calculations.json або тексті
+          calc_ok = False
+          if os.path.exists("calculations.json"):
+              try:
+                  with open("calculations.json", "r", encoding="utf-8") as jf:
+                      data = json.load(jf)
+                      b_max = float(data.get("B_max", 0))
+                      w = float(data.get("W", 0))
+                      m_student = float(data.get("M", 0))
+                      if b_max > 0 and w > 0:
+                          m_calc = b_max / (0.8 * w)
+                          if abs(m_calc - m_student) < 0.05:
+                              calc_ok = True
+              except Exception as e:
+                  print(f"Помилка читання JSON: {e}")
+
+          if not calc_ok and ("500" in content or "80%" in content or "0.8" in content or "0,8" in content):
+              calc_ok = True
+
+          if calc_ok:
+              score += 15
+              feedback.append("Правильність математичних розрахунків: 15/15 балів")
+          else:
+              feedback.append("❌ Помилка або відсутність точних розрахунків: 0/15 балів")
+
+          # 3. Перевірка параметрів кросової за EIA/TIA-569 (25 балів)
+          eia_checks = 0
+          if re.search(r'21\s*°?C', content, re.IGNORECASE) or "21" in content:
+              eia_checks += 1
+          if "30" in content and "50" in content:
+              eia_checks += 1
+          if "1.8" in content or "1,8" in content:
+              eia_checks += 1
+          if "3" in content and ("2.2" in content or "2,2" in content or "6.6" in content):
+              eia_checks += 1
+
+          eia_score = int((eia_checks / 4) * 25)
+          score += eia_score
+          feedback.append(f"Відповідність стандарту EIA/TIA-569 (температура, вологість, розміри, розетки): {eia_score}/25 балів")
+
+          # 4. Перевірка правил СКС та маркування (25 балів)
+          scs_checks = 0
+          if "60" in content:  # маркування кожні 60 см
+              scs_checks += 1
+          if "3" in content:   # 3 рази
+              scs_checks += 1
+          if "MDF" in content or "ГКВ" in content or "IDF" in content or "ПКВ" in content:
+              scs_checks += 1
+
+          scs_score = int((scs_checks / 3) * 25)
+          score += scs_score
+          feedback.append(f"Проектування СКС та маркування: {scs_score}/25 балів")
+
+          # Підсумок у GitHub Step Summary
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+          summary_text = f"""
+          ## 📊 Результати автоматичної перевірки завдання
+
+          **Загальний бал:** `{score} / {max_score}`
+
+          ### Деталізація оцінювання:
+          """ + "\n".join([f"- {item}" for item in feedback])
+
+          if score >= 75:
+              summary_text += "\n\n🎉 **Завдання успішно складено!**"
+          else:
+              summary_text += "\n\n⚠️ **Потрібно доопрацювати розрахунки або деталізацію звіту.**"
+
+          if summary_file:
+              with open(summary_file, "a", encoding="utf-8") as sf:
+                  sf.write(summary_text)
+
+          print(summary_text)
+
+          if score < 60:
+              sys.exit(1)
+          EOF
+
+      - name: Generate Status Badge Feedback
+        if: always()
+        run: |
+          echo "Перевірку завершено."
